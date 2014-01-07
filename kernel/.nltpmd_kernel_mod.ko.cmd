@@ -1,0 +1,1 @@
+cmd_/root/nltpmd/kernel/nltpmd_kernel_mod.ko := ld -r -m elf_x86_64 -T /usr/src/linux-headers-3.2.0-55-generic/scripts/module-common.lds --build-id  -o /root/nltpmd/kernel/nltpmd_kernel_mod.ko /root/nltpmd/kernel/nltpmd_kernel_mod.o /root/nltpmd/kernel/nltpmd_kernel_mod.mod.o
