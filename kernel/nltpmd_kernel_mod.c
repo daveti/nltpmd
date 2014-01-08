@@ -22,7 +22,7 @@ static void nltpmd_nl_recv_msg(struct sk_buff *skb)
         int pid;
         struct sk_buff *skb_out;
         int msg_size;
-        char *msg="hello_from_nltpmd";
+        char *msg="hello_from_nltpmd_kernel_module";
         int res;
 
         printk(KERN_INFO "nltpmd: entering: %s\n", __FUNCTION__);

@@ -5,12 +5,9 @@
  * IP packet from the network provenance kernel module and sign the
  * whole packet using TPM AIK and then send the signature, as well as
  * the packet itself back to the kernel moduel.
- * For detailes, please read the damn code!
- * Reference: Trousers (tcsd)
- * Dec 12, 2013
+ * Dec 12, 2013 - Jan 7, 2014
  * root@davejingtian.org
  * http://davejingtian.org
- *
  */
 
 #include <stdlib.h>
@@ -30,10 +27,14 @@
 #include <getopt.h>
 #include <netinet/in.h>
 #include <linux/netlink.h>
-#include "nltpmd.h"
 #include "tpmw.h"
 #include "nlm.h"
 
+/* Global defs */
+#define NLTPMD_NETLINK		77
+#define NLTPMD_RECV_BUFF_LEN	1024*1024
+
+/* Global variables */
 extern char *optarg;
 static struct sockaddr_nl nltpmd_nl_addr;
 static struct sockaddr_nl nltpmd_nl_dest_addr;
@@ -42,6 +43,7 @@ static int nltpmd_sock_fd;
 static int use_fake_tpm_info;
 static int debug_enabled;
 
+/* Signal term handler */
 static void nltpmd_signal_term(int signal)
 {
 	/* Close the socket */
@@ -50,6 +52,7 @@ static void nltpmd_signal_term(int signal)
 	tpmw_close_tpm();
 }
 
+/* Setup signal handler */
 static int signals_init(void)
 {
 	int rc;
@@ -64,7 +67,7 @@ static int signals_init(void)
 
 	sa.sa_flags = 0;
 	sigemptyset(&sa.sa_mask);
-	sa.sa_handler = tpmd_signal_term;
+	sa.sa_handler = nltpmd_signal_term;
 	if ((rc = sigaction(SIGTERM, &sa, NULL))) {
 		printf("nltpmd - Error: signal SIGTERM not registered [%s]\n", strerror(errno));
 		return -1;
@@ -73,6 +76,65 @@ static int signals_init(void)
 	return 0;
 }
 
+/* Init the netlink with initial nlmsg */
+int nltpmd_init_netlink(void)
+{
+        struct nlmsghdr *nlh;
+        struct iovec iov;
+        struct msghdr msg;
+        int rtn;
+	char *init_msg = "hello_from_nltpmd";
+	int init_msg_len = strlen(init_msg) + 1;
+
+        // Init the stack struct to avoid potential error
+        memset(&iov, 0, sizeof(iov));
+        memset(&msg, 0, sizeof(msg));
+
+        // Create the nelink msg
+        nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(init_msg_len));
+        memset(nlh, 0, NLMSG_SPACE(init_msg_len));
+        nlh->nlmsg_len = NLMSG_SPACE(init_msg_len);
+        nlh->nlmsg_pid = nltpmd_pid;
+        nlh->nlmsg_flags = 0;
+
+	// Add the hello string into the msg
+	strcpy(NLMSG_DATA(nlh), init_msg);
+
+        // Nothing to do for test msg - it is already what it is
+        iov.iov_base = (void *)nlh;
+        iov.iov_len = nlh->nlmsg_len;
+        msg.msg_name = (void *)&nltpmd_nl_dest_addr;
+        msg.msg_namelen = sizeof(nltpmd_nl_dest_addr);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+
+        // Send the msg to the kernel
+        rtn = sendmsg(nltpmd_sock_fd, &msg, 0);
+        if (rtn == -1)
+        {
+                printf("nltpmd_init_netlink: Error on sending netlink init msg to the kernel [%s]\n",
+                                strerror(errno));
+                free(nlh);
+                return rtn;
+        }
+        printf("nltpmd_init_netlink: Info - send netlink init msg to the kernel\n");
+
+        // Recv the response from the kernel
+        rtn = recvmsg(nltpmd_sock_fd, &msg, 0);
+        if (rtn == -1)
+        {
+                printf("nltpmd_init_netlink: Error on recving netlink init msg from the kernel [%s]\n",
+                                strerror(errno));
+                free(nlh);
+                return rtn;
+        }
+
+        // Retrive the data from the kernel
+        printf("nltpmd_init_netlink: Info - got netlink init msg response from the kernel [%s] with pkt_len [%d]\n",
+                        NLMSG_DATA(nlh), (NLMSG_DATA(nlh))->pkt_len);
+        free(nlh);
+        return 0;
+}
 
 static void usage(void)
 {
@@ -171,7 +233,7 @@ int main(int argc, char **argv)
 
 	/* Send the initial testing nlmsgt to the kernel module */
 	result = nltpmd_init_netlink();
-	if (result != -1)
+	if (result != 0)
 	{
 		printf("nltpmd - Error: nltpmd_init_netlink failed\n");
 		return -1;
@@ -242,61 +304,5 @@ int main(int argc, char **argv)
 
 	/* To close correctly, we must receive a SIGTERM */
 	return 0;
-}
-
-
-/* Init the netlink with initial nlmsg */
-int nltpmd_init_netlink(void)
-{
-        struct nlmsghdr *nlh;
-        struct iovec iov;
-        struct msghdr msg;
-        int rtn;
-
-        // Init the stack struct to avoid potential error
-        memset(&iov, 0, sizeof(iov));
-        memset(&msg, 0, sizeof(msg));
-
-        // Create the nelink msg
-        nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(sizeof(nlmsgt)));
-        memset(nlh, 0, NLMSG_SPACE(sizeof(nlmsgt)));
-        nlh->nlmsg_len = NLMSG_SPACE(sizeof(nlmsgt));
-        nlh->nlmsg_pid = nltpmd_pid;
-        nlh->nlmsg_flags = 0;
-
-        // Nothing to do for test msg - it is already what it is
-        iov.iov_base = (void *)nlh;
-        iov.iov_len = nlh->nlmsg_len;
-        msg.msg_name = (void *)&nltpmd_nl_dest_addr;
-        msg.msg_namelen = sizeof(nltpmd_nl_dest_addr);
-        msg.msg_iov = &iov;
-        msg.msg_iovlen = 1;
-
-        // Send the msg to the kernel
-        rtn = sendmsg(nltpmd_sock_fd, &msg, 0);
-        if (rtn == -1)
-        {
-                printf("nltpmd_init_netlink: Error on sending netlink init nlmsgt to the kernel [%s]\n",
-                                strerror(errno));
-                free(nlh);
-                return rtn;
-        }
-        printf("nltpmd_init_netlink: Info - send netlink init nlmsgt to the kernel\n");
-
-        // Recv the response from the kernel
-        rtn = recvmsg(nltpmd_sock_fd, &msg, 0);
-        if (rtn == -1)
-        {
-                printf("nltpmd_init_netlink: Error on recving netlink init nlmsgk from the kernel [%s]\n",
-                                strerror(errno));
-                free(nlh);
-                return rtn;
-        }
-
-	// Retrive the data from the kernel
-        printf("nltpmd_init_netlink: Info - got netlink init nlmsgk from the kernel with pkt_len [%d]\n",
-                        (NLMSG_DATA(nlh))->pkt_len);
-        free(nlh);
-	return rtn;
 }
 
