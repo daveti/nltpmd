@@ -2,7 +2,7 @@ nltpmd
 
 Netlink (Socket) TPM Daemon
 
-A TPM daemon used to talk with a kernel module using netlink socket
+A TPM daemon used to talk with a kernel module using the netlink socket
 
 Designed for network provenance project initially
 
