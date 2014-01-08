@@ -154,6 +154,8 @@ int main(int argc, char **argv)
 	void *recv_buff;
 	int recv_size;
 	int send_size;
+	int num_of_msg;
+	int i;
 	struct hostent *client_hostent = NULL;
 	struct option long_options[] = {
 		{"help", 0, NULL, 'h'},
@@ -220,7 +222,7 @@ int main(int argc, char **argv)
 	/* Prepare the recv buffer */
 	recv_buff = calloc(1, NLTPMD_RECV_BUFF_LEN);
 
-	/* Init the NLM stack */
+	/* Init the NLM queue */
 	nlm_init_queue();
 
 	/* Init the TPM worker - do the dirty job:) */
@@ -240,31 +242,21 @@ int main(int argc, char **argv)
 	}
 	
 	printf("nltpmd - Info: nltpmd is up and running.\n");
+
 	do {
-		/* Recv the msg from the client */
-		recv_size = recv(newsd, recv_buff, TPMD_RECV_BUFF_LEN, 0);
+		/* Recv the msg from the kernel */
+		recv_size = recv(nltpmd_sock_fd, recv_buff, NLTPMD_RECV_BUFF_LEN, 0);
 		if (recv_size == -1)
-		{
-			printf("tpmd - Error: recv failed [%s]\n", strerror(errno));
-		}
+			printf("nltpmd - Error: recv failed [%s]\n", strerror(errno));
 		else if (recv_size == 0)
-		{
-			printf("tpmd - Warning: client socket is closed\n");
-		}
-		else if (recv_size % AT_REQ_LEN != 0)
-		{
-			printf("tpmd - Error: invalid AT msg size (may be garbage) - drop it\n");
-		}
-		else if (recv_size / AT_REQ_LEN != 1)
-		{
-			printf("tpmd - Info: got more than 1 AT msg - push the extras into AT queue\n");
-			at_add_msg_queue((void *)(recv_buff+AT_REQ_LEN), (recv_size-AT_REQ_LEN), AT_MSG_REQ);
-		}
+			printf("nltpmd - Warning: kernel netlink socket is closed\n");
+		else if (nlm_add_raw_msg_queue(recv_buff, recv_size) != 0)
+			printf("nltpmd - Error: nlm_add_raw_msg_queue failed\n");
 
-		memcpy(&msg_req, recv_buff, AT_REQ_LEN);
-
-		/* Handle the first msg and then go thru the queue */
-		do
+		/* NOTE: even if nlm_add_raw_msg_queue may fail, there may be msgs in queue */
+		/* Go thru the queue */
+		num_of_msg = nlm_get_msg_num_queue();
+		for (i = 0; i < num_of_msg; i++)
 		{
 			/* Debug */
 			if (debug_enabled == 1)
@@ -298,7 +290,10 @@ int main(int argc, char **argv)
 				}
 			}
 
-		} while ((at_get_msg_num_queue(AT_MSG_REQ) != 0) && (at_pop_head_msg_queue(&msg_req, AT_MSG_REQ) == 0));
+		}
+
+		/* Clear the queue before recving again */
+		nlm_clear_all_msg_queue();
 
 	} while (1);
 
