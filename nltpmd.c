@@ -77,7 +77,7 @@ static int signals_init(void)
 }
 
 /* Init the netlink with initial nlmsg */
-int nltpmd_init_netlink(void)
+static int nltpmd_init_netlink(void)
 {
         struct nlmsghdr *nlh;
         struct iovec iov;
@@ -90,7 +90,7 @@ int nltpmd_init_netlink(void)
         memset(&iov, 0, sizeof(iov));
         memset(&msg, 0, sizeof(msg));
 
-        // Create the nelink msg
+        // Create the netlink msg
         nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(init_msg_len));
         memset(nlh, 0, NLMSG_SPACE(init_msg_len));
         nlh->nlmsg_len = NLMSG_SPACE(init_msg_len);
@@ -136,6 +136,64 @@ int nltpmd_init_netlink(void)
         return 0;
 }
 
+/* Send the nlmsgt via the netlink socket */
+static int nltpmd_netlink_send(nlmsgt *msg_ptr)
+{
+        struct nlmsghdr *nlh;
+        struct iovec iov;
+        struct msghdr msg;
+        int rtn;
+	unsigned char *data;
+	int data_len;
+
+	// Convert the nlmsgt into binary data
+	data_len = NLM_SIG_LEN + 4 + msg_ptr->pkt_len;
+	data = (unsigned char *)malloc(data_len);
+	memcpy(data, msg_ptr->sig, NLM_SIG_LEN);
+	memcpy((data+NLM_SIG_LEN), &(msg_ptr->pkt_len), 4);
+	memcpy((data+NLM_SIG_LEN+4), msg_ptr->pkt, msg_ptr->pkt_len);
+
+        // Init the stack struct to avoid potential error
+        memset(&iov, 0, sizeof(iov));
+        memset(&msg, 0, sizeof(msg));
+
+        // Create the netlink msg
+        nlh = (struct nlmsghdr *)malloc(NLMSG_SPACE(data_len));
+        memset(nlh, 0, NLMSG_SPACE(data_len));
+        nlh->nlmsg_len = NLMSG_SPACE(data_len);
+        nlh->nlmsg_pid = nltpmd_pid;
+        nlh->nlmsg_flags = 0;
+
+        // Copy the binary data into the netlink message
+	memcpy(NLMSG_DATA(nlh), data, data_len);
+	if (debug_enabled == 1)
+		nlm_display_uchar(NLMSG_DATA(nlh), data_len, "netlink data:");
+
+        // Nothing to do for test msg - it is already what it is
+        iov.iov_base = (void *)nlh;
+        iov.iov_len = nlh->nlmsg_len;
+        msg.msg_name = (void *)&nltpmd_nl_dest_addr;
+        msg.msg_namelen = sizeof(nltpmd_nl_dest_addr);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+
+        // Send the msg to the kernel
+        rtn = sendmsg(nltpmd_sock_fd, &msg, 0);
+        if (rtn == -1)
+        {
+                printf("nltpmd_netlink_send: Error on sending netlink msg to the kernel [%s]\n",
+                                strerror(errno));
+                free(nlh);
+		free(data);
+                return rtn;
+        }
+
+        printf("nltpmd_netlink_send: Info - send netlink msg to the kernel\n");
+        free(nlh);
+	free(data);
+        return 0;
+}
+
 static void usage(void)
 {
 	fprintf(stderr, "\tusage: nltpmd [-f] [-c <config file> [-h]\n\n");
@@ -156,6 +214,7 @@ int main(int argc, char **argv)
 	int send_size;
 	int num_of_msg;
 	int i;
+	nlmsgt *msg_ptr;
 	struct hostent *client_hostent = NULL;
 	struct option long_options[] = {
 		{"help", 0, NULL, 'h'},
@@ -226,7 +285,7 @@ int main(int argc, char **argv)
 	nlm_init_queue();
 
 	/* Init the TPM worker - do the dirty job:) */
-	result = tpmw_init_tpm(TPMW_MODE_TPMD);
+	result = tpmw_init_tpm();
 	if (result != 0)
 	{
 		printf("nltpmd - Error: tpmw_init_tpm failed\n");
@@ -240,7 +299,10 @@ int main(int argc, char **argv)
 		printf("nltpmd - Error: nltpmd_init_netlink failed\n");
 		return -1;
 	}
-	
+
+	/* Test the TPM hashing function */
+	/* TODO */
+
 	printf("nltpmd - Info: nltpmd is up and running.\n");
 
 	do {
@@ -256,40 +318,32 @@ int main(int argc, char **argv)
 		/* NOTE: even if nlm_add_raw_msg_queue may fail, there may be msgs in queue */
 		/* Go thru the queue */
 		num_of_msg = nlm_get_msg_num_queue();
+		if (debug_enabled == 1)
+			printf("nltpmd - Debug: got [%d] msgs(packets) in the queue\n", num_of_msg);
+
 		for (i = 0; i < num_of_msg; i++)
 		{
+			/* Get the nlmsgt msg */
+			msg_ptr = nlm_get_msg_queue(i);
+
 			/* Debug */
 			if (debug_enabled == 1)
-				at_display_msg_req(&msg_req);
+				nlm_display_msg(msg_ptr);
 
-			/* Validate the msg */
-			if (at_is_msg_req(&msg_req) != 1)
-			{
-				/* DDos may be considered here */
-				printf("tpmd - Error: invalid AT request - drop it\n");
-			}
+			/* Get the signature of the packet */
+			result = tpmw_sign_packet(msg_ptr);
+			if (result != 0)
+				printf("nltpmd - Error: tpmw_sign_packet failed\n");
 			else
 			{
-				/* Process the AT request and generate the AT reply */
-				if (tpmw_at_req_handler(&msg_rep, &msg_req, use_fake_tpm_info) != 0)
-				{
-					printf("tpmd - Error: tpmw_req_handler failed\n");
-				}
-				else
-				{
-					/* Debug */
-					if (debug_enabled == 1)
-						at_display_msg_rep(&msg_rep);
+				/* Send the nlmsgt to the kernel */
+				if (debug_enabled == 1)
+					nlm_display_msg(msg_ptr);
 
-					/* Send the reply back */
-					send_size = send(newsd, (void *)&msg_rep, AT_REP_LEN, 0);
-					if (send_size != AT_REP_LEN)
-						printf("tpmd - Error: send failed [%s]\n", strerror(errno));
-					else
-						printf("tpmd - Info: sent an reply to host [%s]\n", hostname);
-				}
+				result = nltpmd_netlink_send(msg_ptr);
+				if (result != 0)
+					printf("nltpmd - Error: nltpmd_netlink_send failed\n");
 			}
-
 		}
 
 		/* Clear the queue before recving again */
