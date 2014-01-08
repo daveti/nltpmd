@@ -2,6 +2,7 @@
  * nltpmd_kernel_mod.c
  * nltpmd kernel module using netlink
  * Kernel version: 2.6.X
+ * NOTE: the way to create netlink socket is different in the kernel 3.9.X!
  * Jan 7, 2014
  * daveti@cs.uoregon.edu
  * http://daveti.blog.com
