@@ -1,6 +1,11 @@
 /*
  * tpmw.c
  * Source file for tpmw
+ *
+ * Feb 23, 2014
+ * Added support for nltpmd and comment things for AT
+ * daveti
+ *
  * TPM worker (tpmw) is used to pass the AT request/reply
  * to the local TPM (tcsd) and generate the corresponding
  * AT reply or msg validation.
@@ -120,7 +125,14 @@ int tpmw_init_tpm(int mode)
         		tpmw_display_uchar(prgbPubKey, pulPubKeyLength, "tpmw - AIK pub key:");
 		}
         }
-
+	/* For nltpmd, AIK should NOT be used for signing things generated outside TPM.
+	 * Instead, other signing key should be loaded/used.
+ 	 * Feb 23, 2014
+ 	 * daveti@cs.uoregon.edu
+ 	 */
+	else if (mode == TPMW_MODE_NLTPMD)
+	{
+	}
 	/* Prepare the global buf for PCR hashing
 	 * NOTE: the header of the PCR hashing is a little bit tricky.
 	 * Actually, it should be calculated using TPM_GetCapability.
@@ -131,9 +143,14 @@ int tpmw_init_tpm(int mode)
 	 * Sep 19, 2013
 	 * -daveti
 	 */
-	if (mode == TPMW_MODE_ARPSECD)
+	else if (mode == TPMW_MODE_ARPSECD)
 	{
 		tpmw_init_pcr_hash_buf();
+	}
+	else
+	{
+		printf("tpmw - Error: unknown mode [%d]\n", mode);
+		goto close;
 	}
 
 	return 0;
@@ -165,6 +182,7 @@ void tpmw_clear_global_records(void)
 	}
 }
 
+#ifndef TPMW_MODE_NLTPMD
 /* Main method to process AT request  - tpmd */
 int tpmw_at_req_handler(at_rep *rep, at_req *req, int fake)
 {
@@ -276,6 +294,7 @@ int tpmw_at_rep_handler(at_rep *rep)
 
 	return 0;
 }
+#endif
 
 
 /* TPM local methods - talking with tcsd */
@@ -439,6 +458,7 @@ int tpmw_get_pcr_value(void)
 
 /* For tpmd */
 
+#ifndef TPMW_MODE_NLTPMD
 /* Generate the fake AT reply - for UT */
 void tpmw_generate_fake_at_rep(at_rep *rep)
 {
@@ -450,6 +470,7 @@ void tpmw_generate_fake_at_rep(at_rep *rep)
 	rep->header[1] = 't';
 	rep->header[2] = 'p';
 }
+#endif
 
 /* Get the quote using AIK */
 TSS_VALIDATION *tpmw_get_quote_with_aik(void)
@@ -513,6 +534,7 @@ close:
 	return rtn;
 }
 
+#ifndef TPMW_MODE_NLTPMD
 /* Generate the AT reply based on validation struct */
 void tpmw_generate_at_rep(at_rep *rep, TSS_VALIDATION *valid)
 {
@@ -537,6 +559,7 @@ void tpmw_generate_at_rep(at_rep *rep, TSS_VALIDATION *valid)
 			AT_SIG_LEN);
 	memcpy(rep->sig, valid->rgbValidationData, AT_SIG_LEN);
 }
+#endif
 
 /* For arpsecd */
 
@@ -556,6 +579,7 @@ void tpmw_load_db_entry(unsigned char *pcr_mask, unsigned char *pcr_value, int p
 	memcpy(tpmw_aik_pub_key, key, key_len);
 }
 
+#ifndef TPMW_MODE_NLTPMD
 /* Generate the AT request */
 int tpmw_generate_at_req(at_req *req)
 {
@@ -582,6 +606,7 @@ int tpmw_generate_at_req(at_req *req)
 
 	return 0;
 }
+#endif
 
 /* Init the PCR hash buf for future PCR digest verification */
 void tpmw_init_pcr_hash_buf(void)
@@ -626,6 +651,7 @@ void tpmw_generate_pcr_hash_buf(unsigned char *pcr_value, int len)
         tpmw_pcr_hash_len = (int)(bp - tpmw_pcr_hash_buf);
 }
 
+#ifndef TPMW_MODE_NLTPMD
 /* Verify the signature by loading AIK pub key and computing hash */
 int tpmw_verify_signature(unsigned char *data, unsigned char *sig)
 {
@@ -711,5 +737,14 @@ close2:
 	Tspi_Context_CloseObject(hContext, hHash);
 	return rtn;
 }
+#endif
 
 
+
+/* For nltpmd */
+
+/* Sign the packet */
+int tpmw_sign_packet(nlmsgt *ptr)
+{
+	return 0;
+}

@@ -11,6 +11,7 @@
 /* NLM macros */
 #define NLM_SIG_LEN		256
 #define NLM_DIGEST_LEN		20
+#define NLM_UCHAR_NUM_PER_LINE	64
 
 /* Definition for the netlink msgs */
 typedef struct _nlmsgt

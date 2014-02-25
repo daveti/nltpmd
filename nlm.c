@@ -24,7 +24,7 @@ void nlm_display_uchar(unsigned char *src, int len, char *header)
 	printf("%s\n", header);
 	for (i = 0; i < len; i++)
 	{
-		if ((i+1) % AT_UCHAR_NUM_PER_LINE != 0)
+		if ((i+1) % NLM_UCHAR_NUM_PER_LINE != 0)
 			printf("%02x ", src[i]);
 		else
 			printf("%02x\n", src[i]);
@@ -44,7 +44,7 @@ void nlm_display_msg(nlmsgt *msg)
 /* NLM queue related methods */
 
 /* Init the NLM queue */
-void nlm_init_queue(int type)
+void nlm_init_queue(void)
 {
 	memset((unsigned char *)nlm_queue, 0, NLM_QUEUE_SIZE);
 	nlm_queue_index = 0;
@@ -143,6 +143,6 @@ int nlm_get_msg_num_queue(void)
 /* Get the msg from the queue based on the index */
 nlmsgt * nlm_get_msg_queue(int index)
 {
-	return &(nlm_queue(index));
+	return &(nlm_queue[index]);
 }
 

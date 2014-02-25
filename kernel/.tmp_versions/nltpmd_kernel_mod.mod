@@ -1,2 +1,2 @@
-/root/nltpmd/kernel/nltpmd_kernel_mod.ko
-/root/nltpmd/kernel/nltpmd_kernel_mod.o
+/home/daveti/git/nltpmd/kernel/nltpmd_kernel_mod.ko
+/home/daveti/git/nltpmd/kernel/nltpmd_kernel_mod.o

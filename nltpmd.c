@@ -31,7 +31,7 @@
 #include "nlm.h"
 
 /* Global defs */
-#define NLTPMD_NETLINK		77
+#define NLTPMD_NETLINK		31
 #define NLTPMD_RECV_BUFF_LEN	1024*1024
 
 /* Global variables */
@@ -85,6 +85,7 @@ static int nltpmd_init_netlink(void)
         int rtn;
 	char *init_msg = "hello_from_nltpmd";
 	int init_msg_len = strlen(init_msg) + 1;
+	int len;
 
         // Init the stack struct to avoid potential error
         memset(&iov, 0, sizeof(iov));
@@ -98,7 +99,7 @@ static int nltpmd_init_netlink(void)
         nlh->nlmsg_flags = 0;
 
 	// Add the hello string into the msg
-	strcpy(NLMSG_DATA(nlh), init_msg);
+	memcpy(NLMSG_DATA(nlh), init_msg, init_msg_len);
 
         // Nothing to do for test msg - it is already what it is
         iov.iov_base = (void *)nlh;
@@ -130,8 +131,9 @@ static int nltpmd_init_netlink(void)
         }
 
         // Retrive the data from the kernel
-        printf("nltpmd_init_netlink: Info - got netlink init msg response from the kernel [%s] with pkt_len [%d]\n",
-                        NLMSG_DATA(nlh), (NLMSG_DATA(nlh))->pkt_len);
+        memcpy(&len, NLMSG_DATA(nlh), 4);
+        printf("nltpmd_init_netlink: Info - got netlink init msg response from the kernel [%s] len [%d]\n",
+                        (char *)(NLMSG_DATA(nlh)+4), len);
         free(nlh);
         return 0;
 }
@@ -207,15 +209,12 @@ static void usage(void)
 int main(int argc, char **argv)
 {
 	int result;
-	int newsd, c, option_index = 0;
-	unsigned client_len;
+	int c, option_index = 0;
 	void *recv_buff;
 	int recv_size;
-	int send_size;
 	int num_of_msg;
 	int i;
 	nlmsgt *msg_ptr;
-	struct hostent *client_hostent = NULL;
 	struct option long_options[] = {
 		{"help", 0, NULL, 'h'},
 		{"fake", 0, NULL, 'f'},
@@ -263,7 +262,7 @@ int main(int argc, char **argv)
 	memset(&nltpmd_nl_addr, 0, sizeof(nltpmd_nl_addr));
 	nltpmd_nl_addr.nl_family = AF_NETLINK;
         nltpmd_pid = getpid();
-        printf("nltpmd - Info: pid [%lu]\n", nltpmd_pid);
+        printf("nltpmd - Info: pid [%u]\n", nltpmd_pid);
         nltpmd_nl_addr.nl_pid = nltpmd_pid;
         if (bind(nltpmd_sock_fd, (struct sockaddr*)&nltpmd_nl_addr, sizeof(nltpmd_nl_addr)) == -1)
         {
@@ -280,12 +279,18 @@ int main(int argc, char **argv)
 
 	/* Prepare the recv buffer */
 	recv_buff = calloc(1, NLTPMD_RECV_BUFF_LEN);
+	struct iovec iov = { recv_buff, NLTPMD_RECV_BUFF_LEN };
+	struct nlmsghdr *nh;
+	struct nlmsgerr *nlm_err_ptr;
+	struct msghdr msg = { &nltpmd_nl_dest_addr,
+		sizeof(nltpmd_nl_dest_addr),
+		&iov, 1, NULL, 0, 0 };
 
 	/* Init the NLM queue */
 	nlm_init_queue();
 
 	/* Init the TPM worker - do the dirty job:) */
-	result = tpmw_init_tpm();
+	result = tpmw_init_tpm(TPMW_MODE_NLTPMD);
 	if (result != 0)
 	{
 		printf("nltpmd - Error: tpmw_init_tpm failed\n");
@@ -307,17 +312,75 @@ int main(int argc, char **argv)
 
 	do {
 		/* Recv the msg from the kernel */
-		recv_size = recv(nltpmd_sock_fd, recv_buff, NLTPMD_RECV_BUFF_LEN, 0);
-		if (recv_size == -1)
+		recv_size = recvmsg(nltpmd_sock_fd, &msg, 0);
+		if (recv_size == -1) {
 			printf("nltpmd - Error: recv failed [%s]\n", strerror(errno));
-		else if (recv_size == 0)
+			continue;
+		}
+		else if (recv_size == 0) {
 			printf("nltpmd - Warning: kernel netlink socket is closed\n");
-		else if (nlm_add_raw_msg_queue(recv_buff, recv_size) != 0)
-			printf("nltpmd - Error: nlm_add_raw_msg_queue failed\n");
+			continue;
+		}
 
-		/* NOTE: even if nlm_add_raw_msg_queue may fail, there may be msgs in queue */
+		/* Pop nlmsgs into the NLM queue
+		 * Note that we do not allow multipart msg from the kernel.
+		 * So we do not have to call NLMSG_NEXT() and only one msg
+		 * would be recv'd for each recvmsg call. NLM queue seems
+		 * to be redundant if nltpmd is single thread. But it is
+		 * needed if TPM pkt signing is the other thread.
+		 * Feb 24, 2014
+		 * daveti
+		 */
+		nh = (struct nlmsghdr *)recv_buff;
+		if (NLMSG_OK(nh, recv_size))
+		{
+			/* Make sure the msg is alright */
+			if (nh->nlmsg_type == NLMSG_ERROR)
+			{
+				nlm_err_ptr = (struct nlmsgerr *)(NLMSG_DATA(nh));
+				printf("nltpmd - Error: nlmsg error [%d]\n",
+					nlm_err_ptr->error);
+				continue;
+			}
+
+			/* Ignore the noop */
+			if (nh->nlmsg_type == NLMSG_NOOP)
+				continue;
+
+			/* Defensive checking - should always be non-multipart msg */
+			if (nh->nlmsg_type != NLMSG_DONE)
+			{
+				printf("nltpmd - Error: nlmsg type [%d] is not supported\n",
+					nh->nlmsg_type);
+				continue;
+			}
+
+			/* Pop the msg into the NLM queue */
+			if (nlm_add_raw_msg_queue(NLMSG_DATA(nh),
+					NLMSG_PAYLOAD(nh, recv_size)) != 0)
+			{
+				printf("nltpmd - Error: nlm_add_raw_msg_queue failed\n");
+				continue;
+			}
+		}
+		else
+		{
+			printf("nltpmd - Error: netlink msg is corrupted\n");
+			continue;
+		}
+
+		/* NOTE: even if nlm_add_raw_msg_queue may fail, there may be msgs in queue
+		 * Right now, nltpmd is single thread - recving msgs from the kernel space
+		 * and then processing each msg upon this recving. However, the code below
+		 * could be separated into a worker thread which could run parallelly with
+		 * the main thread. This may be an option to improve the performance even
+		 * the mutex has to be added into NLM queue implementation...
+		 * Feb 24, 2014
+		 * daveti
+		 */
+
 		/* Go thru the queue */
-		num_of_msg = nlm_get_msg_num_queue();
+		num_of_msg = nlm_get_msg_num_queue(); /* should be always 1 */
 		if (debug_enabled == 1)
 			printf("nltpmd - Debug: got [%d] msgs(packets) in the queue\n", num_of_msg);
 
